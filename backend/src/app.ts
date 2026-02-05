@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import scannerRoutes from "./routes/scanner.routes";
 import pantryRoutes from "./routes/pantry.routes";
+import userRoutes from "./routes/user.routes";
 
 const app = express();
 
@@ -22,6 +23,7 @@ app.use(express.json());
 // Routes
 app.use("/api/scanner", scannerRoutes);
 app.use("/api/pantry", pantryRoutes);
+app.use("/api/user", userRoutes);
 
 // Health check
 app.get("/", (_req, res) => {

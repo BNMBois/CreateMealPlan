@@ -1,62 +1,82 @@
-import React, { useEffect, useState } from 'react';
-import { User, Settings, Award } from 'lucide-react';
-import { signOut } from 'firebase/auth';
-import { auth, db } from "../firebase";
-import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useState } from "react";
+import { User, Settings, Award } from "lucide-react";
+import { signOut } from "firebase/auth";
+import { auth } from "../firebase";
+import { useNavigate } from "react-router-dom";
+
+const API_BASE_URL = "http://localhost:8000";
 
 const Profile: React.FC = () => {
   const navigate = useNavigate();
   const user = auth.currentUser;
 
-  const [proteinTarget, setProteinTarget] = useState(140);
+  const [proteinTarget, setProteinTarget] = useState<number>(140);
   const [tags, setTags] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
 
-  // 🔥 Load user profile
+  // 🔐 Redirect if not logged in
   useEffect(() => {
-    if (!user) return;
+    if (!user) {
+      navigate("/login");
+    }
+  }, [user, navigate]);
 
+  // 🔥 Load profile from backend
+  useEffect(() => {
     const loadProfile = async () => {
-      const ref = doc(db, 'users', user.uid);
-      const snap = await getDoc(ref);
+      if (!user) return;
 
-      if (snap.exists()) {
-        const data = snap.data();
-        setProteinTarget(data.proteinTarget ?? 140);
-        setTags(data.tags ?? []);
-      } else {
-        // create user doc if first time
-        await setDoc(ref, {
-          name: user.displayName,
-          email: user.email,
-          photo: user.photoURL,
-          proteinTarget: 140,
-          tags: []
+      try {
+        const token = await user.getIdToken();
+
+        const res = await fetch(`${API_BASE_URL}/api/user/profile`, {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
         });
+
+        const data = await res.json();
+
+        setProteinTarget(data?.proteinTarget ?? 140);
+        setTags(data?.tags ?? []);
+      } catch (err) {
+        console.error("Failed to load profile:", err);
+      } finally {
+        setLoading(false);
       }
-      setLoading(false);
     };
 
     loadProfile();
   }, [user]);
 
-  // 💾 Save protein target
-  const saveProteinTarget = async (value: number) => {
+  // 💾 Save protein target (backend → Firestore)
+  const saveProteinTarget = async () => {
     if (!user) return;
-    setProteinTarget(value);
 
-    await setDoc(
-      doc(db, 'users', user.uid),
-      { proteinTarget: value },
-      { merge: true }
-    );
+    try {
+      setSaving(true);
+      const token = await user.getIdToken();
+
+      await fetch(`${API_BASE_URL}/api/user/protein-target`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ proteinTarget }),
+      });
+    } catch (err) {
+      console.error("Failed to save protein target:", err);
+    } finally {
+      setSaving(false);
+    }
   };
 
   // 🚪 Logout
   const handleLogout = async () => {
     await signOut(auth);
-    navigate('/login');
+    navigate("/login");
   };
 
   if (loading) {
@@ -66,58 +86,82 @@ const Profile: React.FC = () => {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center gap-4" style={{ marginBottom: '2.5rem' }}>
+      <div className="flex items-center gap-4" style={{ marginBottom: "2.5rem" }}>
         <div
           style={{
-            width: '64px',
-            height: '64px',
-            borderRadius: '50%',
-            background: 'linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center'
+            width: "64px",
+            height: "64px",
+            borderRadius: "50%",
+            background:
+              "linear-gradient(135deg, var(--accent-primary), var(--accent-secondary))",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
           }}
         >
-          <span style={{ fontSize: '2rem', fontWeight: 'bold', color: 'white', textTransform: 'uppercase' }}>
-            {user?.displayName?.[0] ?? user?.email?.[0] ?? 'U'}
+          <span
+            style={{
+              fontSize: "2rem",
+              fontWeight: "bold",
+              color: "white",
+              textTransform: "uppercase",
+            }}
+          >
+            {user?.displayName?.[0] ?? user?.email?.[0] ?? "U"}
           </span>
         </div>
         <div>
-          <h2 className="text-2xl">{user?.displayName ?? 'User'}</h2>
+          <h2 className="text-2xl">{user?.displayName ?? "User"}</h2>
           <p className="text-muted">{user?.email}</p>
         </div>
       </div>
 
       {/* Dietary Goals */}
-      <h3 className="text-xl" style={{ marginBottom: '1rem' }}>Dietary Goals</h3>
-      <div className="glass-panel" style={{ marginBottom: '2rem' }}>
-        <div style={{ marginBottom: '1.5rem' }}>
-          <div className="flex justify-between" style={{ marginBottom: '0.5rem' }}>
+      <h3 className="text-xl" style={{ marginBottom: "1rem" }}>
+        Dietary Goals
+      </h3>
+      <div className="glass-panel" style={{ marginBottom: "2rem" }}>
+        <div style={{ marginBottom: "1.5rem" }}>
+          <div className="flex justify-between" style={{ marginBottom: "0.5rem" }}>
             <label className="label">Daily Protein Target</label>
-            <span style={{ color: 'var(--accent-primary)', fontWeight: 'bold' }}>
+            <span
+              style={{
+                color: "var(--accent-primary)",
+                fontWeight: "bold",
+              }}
+            >
               {proteinTarget}g
             </span>
           </div>
+
           <input
             type="range"
             min={50}
             max={250}
             value={proteinTarget}
-            onChange={(e) => saveProteinTarget(Number(e.target.value))}
+            onChange={(e) => setProteinTarget(Number(e.target.value))}
+            onMouseUp={saveProteinTarget}
+            onTouchEnd={saveProteinTarget}
             className="w-full"
-            style={{ accentColor: 'var(--accent-primary)' }}
+            style={{ accentColor: "var(--accent-primary)" }}
           />
+
+          {saving && (
+            <p className="text-muted" style={{ marginTop: "0.5rem" }}>
+              Saving...
+            </p>
+          )}
         </div>
 
         <div className="flex gap-2 flex-wrap">
-          {tags.map(tag => (
+          {tags.map((tag) => (
             <span
               key={tag}
               className="badge"
               style={{
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--text-secondary)',
-                color: 'var(--text-secondary)'
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--text-secondary)",
+                color: "var(--text-secondary)",
               }}
             >
               {tag}
@@ -127,22 +171,24 @@ const Profile: React.FC = () => {
       </div>
 
       {/* Settings */}
-      <h3 className="text-xl" style={{ marginBottom: '1rem' }}>Settings</h3>
+      <h3 className="text-xl" style={{ marginBottom: "1rem" }}>
+        Settings
+      </h3>
       <div className="glass-panel" style={{ padding: 0 }}>
         {[
-          { icon: User, label: 'Account Details' },
-          { icon: Award, label: 'Subscription' },
-          { icon: Settings, label: 'App Preferences' },
+          { icon: User, label: "Account Details" },
+          { icon: Award, label: "Subscription" },
+          { icon: Settings, label: "App Preferences" },
         ].map((item, i) => (
           <div
             key={i}
             style={{
-              padding: '1.25rem',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '1rem',
-              borderBottom: i < 2 ? '1px solid var(--glass-border)' : 'none',
-              cursor: 'pointer'
+              padding: "1.25rem",
+              display: "flex",
+              alignItems: "center",
+              gap: "1rem",
+              borderBottom: i < 2 ? "1px solid var(--glass-border)" : "none",
+              cursor: "pointer",
             }}
           >
             <item.icon className="text-muted" size={20} />
@@ -153,7 +199,11 @@ const Profile: React.FC = () => {
 
       <button
         className="btn btn-secondary w-full"
-        style={{ marginTop: '2rem', borderColor: 'var(--danger)', color: 'var(--danger)' }}
+        style={{
+          marginTop: "2rem",
+          borderColor: "var(--danger)",
+          color: "var(--danger)",
+        }}
         onClick={handleLogout}
       >
         Log Out

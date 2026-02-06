@@ -60,11 +60,10 @@ describe('Pantry Controller', () => {
             });
 
             const getMock = jest.fn().mockResolvedValue({ empty: true });
-            const whereMock = jest.fn().mockReturnValue({ where: jest.fn().mockReturnValue({ get: getMock }) });
             (db.collection as jest.Mock).mockReturnValue({
                 where: jest.fn().mockReturnValue({ where: jest.fn().mockReturnValue({ get: getMock }) }),
                 doc: jest.fn().mockReturnValue({ id: 'new-doc-id' }),
-                add: jest.fn(), // for history
+                add: jest.fn(),
             });
 
             await addItemsToPantry(req as Request, res as Response);
@@ -72,6 +71,80 @@ describe('Pantry Controller', () => {
             expect(statusMock).toHaveBeenCalledWith(201);
             expect(batchCommit).toHaveBeenCalled();
             expect(batchSet).toHaveBeenCalled();
+        });
+
+        it('should merge processing logic with weight units', async () => {
+            // New item: 1 kg Chicken
+            req.body = {
+                items: [
+                    { name: 'Chicken', quantity: '1', unit: 'kg' }, // 1000g
+                    { name: 'Beef', quantity: '1', unit: 'lbs' }    // 453g
+                ]
+            };
+            (normalizeItemName as jest.Mock).mockResolvedValue('Item');
+
+            // Existing item: 500g Chicken
+            const existingDoc = {
+                id: 'existing-doc',
+                ref: 'ref',
+                data: () => ({
+                    name: 'Chicken',
+                    totalCount: 1,
+                    totalWeight: 500, // 500g
+                    unit: 'g'
+                })
+            };
+
+            const getMock = jest.fn()
+                .mockResolvedValueOnce({ empty: false, docs: [existingDoc] }) // Chicken exists
+                .mockResolvedValueOnce({ empty: true }); // Beef new
+
+            const batchUpdate = jest.fn();
+            const batchSet = jest.fn();
+            (db.batch as jest.Mock).mockReturnValue({
+                commit: jest.fn(),
+                set: batchSet,
+                update: batchUpdate
+            });
+
+            (db.collection as jest.Mock).mockReturnValue({
+                where: jest.fn().mockReturnValue({ where: jest.fn().mockReturnValue({ get: getMock }) }),
+                doc: jest.fn().mockReturnValue({ id: 'new-id' }),
+                add: jest.fn()
+            });
+
+            await addItemsToPantry(req as Request, res as Response);
+
+            expect(batchUpdate).toHaveBeenCalled();
+            expect(batchSet).toHaveBeenCalled(); // Beef
+        });
+
+        it('should handle history save failure gracefully', async () => {
+            req.body = { items: [{ name: 'Apple', quantity: '1' }] };
+            // Mock success for add but fail for history
+            const getMock = jest.fn().mockResolvedValue({ empty: true });
+            (db.collection as jest.Mock).mockReturnValue({
+                where: jest.fn().mockReturnValue({ where: jest.fn().mockReturnValue({ get: getMock }) }),
+                doc: jest.fn().mockReturnValue({ id: 'id' }),
+                add: jest.fn().mockRejectedValue(new Error('History fail'))
+            });
+
+            const batchCommit = jest.fn().mockResolvedValue(true);
+            (db.batch as jest.Mock).mockReturnValue({
+                commit: batchCommit,
+                set: jest.fn(), update: jest.fn()
+            });
+
+            await addItemsToPantry(req as Request, res as Response);
+            // Should still succeed 201 even if history fails
+            expect(statusMock).toHaveBeenCalledWith(201);
+        });
+
+        it('should catch global errors', async () => {
+            req.body = { items: [{ name: 'X' }] };
+            (db.batch as jest.Mock).mockImplementation(() => { throw new Error('DB Error'); });
+            await addItemsToPantry(req as Request, res as Response);
+            expect(statusMock).toHaveBeenCalledWith(500);
         });
     });
 
@@ -166,6 +239,65 @@ describe('Pantry Controller', () => {
             await deletePantryItem(req as Request, res as Response);
             expect(statusMock).toHaveBeenCalledWith(200);
             expect(deleteMock).toHaveBeenCalled();
+        });
+    });
+
+    describe('Unit Conversions via addItemsToPantry', () => {
+        it('should handle various units (lbs, oz, kg, g)', async () => {
+            const units = ['lbs', 'oz', 'kg', 'g', 'unknown'];
+            const items = units.map(u => ({ name: 'Item', quantity: '1', unit: u }));
+            req.body = { items };
+
+            // All new items
+            const getMock = jest.fn().mockResolvedValue({ empty: true });
+            (db.collection as jest.Mock).mockReturnValue({
+                where: jest.fn().mockReturnValue({ where: jest.fn().mockReturnValue({ get: getMock }) }),
+                doc: jest.fn().mockReturnValue({ id: 'id' }),
+                add: jest.fn()
+            });
+
+            const batchSet = jest.fn();
+            (db.batch as jest.Mock).mockReturnValue({
+                commit: jest.fn(),
+                set: batchSet,
+                update: jest.fn()
+            });
+
+            await addItemsToPantry(req as Request, res as Response);
+            expect(batchSet).toHaveBeenCalledTimes(5);
+        });
+    });
+
+    describe('addSingleItem', () => {
+        it('should wrap single item and call addItemsToPantry', async () => {
+            req.body = { name: 'Single', quantity: '1' };
+
+            const getMock = jest.fn().mockResolvedValue({ empty: true });
+            (db.collection as jest.Mock).mockReturnValue({
+                where: jest.fn().mockReturnValue({ where: jest.fn().mockReturnValue({ get: getMock }) }),
+                doc: jest.fn().mockReturnValue({ id: 'id' }),
+                add: jest.fn()
+            });
+            (db.batch as jest.Mock).mockReturnValue({
+                commit: jest.fn(),
+                set: jest.fn(),
+                update: jest.fn()
+            });
+
+            // Need to import it
+            const { addSingleItem } = require('../../controllers/pantry.controller');
+            await addSingleItem(req as Request, res as Response);
+
+            expect(statusMock).toHaveBeenCalledWith(201);
+        });
+
+        it('should handle error in addSingleItem', async () => {
+            req.body = {}; // Missing name/quantity might cause issues or just 400
+            // Force error
+            (db.batch as jest.Mock).mockImplementation(() => { throw new Error('Fail'); });
+            const { addSingleItem } = require('../../controllers/pantry.controller');
+            await addSingleItem(req as Request, res as Response);
+            expect(statusMock).toHaveBeenCalledWith(500);
         });
     });
 });
